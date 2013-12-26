@@ -1,0 +1,8 @@
+name = FTL Norwegian
+description = Culculate FTL for Norwegian Airlines
+package = "Aviation"
+;dependencies[] = "timefield"
+;stylesheets[all][] = gigplanning.css
+;scripts[] = /misc/tableheader.js
+version = "7.x-0.1"
+core = "7.x"

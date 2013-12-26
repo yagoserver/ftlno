@@ -1,0 +1,333 @@
+<?php
+
+/**
+ * Implements hook_mednu
+ */
+function ftl_no_menu() {
+	$items = array();
+	$items['ftl/form'] = array(
+    'title' => 'FTL calculation form',
+    'access callback' => 'user_access',
+    'access arguments' => array('use ftl'),
+    'description' => '',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('ftlno_calculation_form'),
+    'type' => MENU_CALLBACK,
+	 );
+	return $items;
+}
+
+function ftlno_calculation_form($form, &$form_state) {
+	$dt = date('c', time());
+	$base_stations = get_basestations();
+	if (!empty($form_state['results_table'])) {
+    $form['results_table'] = array('#markup' => $form_state['results_table']);
+  }	
+	$form['base_group'] = array(
+	  '#type' => 'fieldset', 
+		'#title' => t('Base station'), 
+    '#collapsible' => TRUE, 
+    '#collapsed' => FALSE,
+   );
+	$form['base_group']['base'] = array(
+    '#type' => 'select',
+    '#title' => t('Your base'),
+    '#options' => $base_stations,
+   //  '#default_value' => $category['selected'],
+   '#description' => t('Set this to the station where you are based'),
+   );
+	 
+	$form['base_group']['last_dep_from_base_lt'] = array(
+     '#type' => 'date_popup', 
+     '#title' => t('Last departure homebase(UTC)'),
+		 '#description' => t('The time (UTC) of your last departure from your base station'),
+     '#default_value' => $dt,
+     '#date_label_position' => 'within', 
+     '#date_timezone' => 'UTC',
+     '#date_year_range' => '-1:+1',
+     '#datepicker_options' => array(), 
+  ); 
+	$form['report_group'] = array(
+	  '#type' => 'fieldset', 
+		'#title' => t('Report Station'), 
+    '#collapsible' => TRUE, 
+    '#collapsed' => FALSE,
+   );
+	$form['report_group']['report_station'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Reporting station'),
+    '#length' => 3,
+		'#width' => 3,
+		'#default_value' => 'OSL',
+    '#description' => t('The station where you report for this duty (3-letter code)'),
+   );
+	
+	
+	$form['report_group']['report_time_lt'] = array(
+     '#type' => 'date_popup',
+     '#title' => t('Reporting date and time (LT)'),
+     '#default_value' => $dt,
+     '#date_label_position' => 'within',
+     '#date_timezone' => 'UTC',
+     '#date_year_range' => '-1:+1',
+     '#datepicker_options' => array(), 
+  );
+	
+		$form['flight_details'] = array(
+	  '#type' => 'fieldset', 
+		'#title' => t('Flight details'), 
+    '#collapsible' => TRUE, 
+    '#collapsed' => FALSE,
+   );
+	 
+	 $form['flight_details']['eta'] = array(
+	  '#title' => t('Landing ETA - UTC'),
+    '#type' => 'date_popup',
+    '#description' => t('Arrival date end time UTC'),
+    '#description' => t('Leave this field open to calculate the Latest ETA'),
+  );
+	$sectors = array('1' => 1, '2' => 2, '3' => 3, '4' => 4, '5' => 5, '6' => 6); 
+	$form['flight_details']['sectors'] = array(
+    '#type' => 'select',
+		'#number_type' => 'integer',
+    '#title' => t('Sectors'),
+    '#options' => $sectors,
+    '#description' => t('Number of legs in this duty period'),
+  );
+ 	$form['crew'] = array(
+    '#type' => 'fieldset', 
+	 	'#title' => t('Flight details'), 
+    '#collapsible' => TRUE, 
+    '#collapsed' => FALSE,
+  );
+	 
+  $form['crew']['augmented'] = array(
+	  '#type' => 'radios',
+    '#title' => t('Crew augmented'),
+    '#default_value' => 0,
+    '#options' => array('0' => t('No'), '1' => t('Yes')),
+    );
+	 
+	 $form['crew']['bunktime'] = array(
+	  '#type' => 'textfield',
+    '#title' => t('Time spend in bunk'),
+    //'#default_value' => 1,
+   // '#options' => array('0' => t('No'), '1' => t('Yes')),
+    '#description' => t('Enter the amount of time spent in bunk. Use format HH:MM. e.g. 01:30'),
+		'#disabled' => TRUE,
+    //'#access' => $admin,
+   );
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Calculate'),
+  );
+ return $form;
+}
+
+function ftlno_calculation_form_validate($form, &$form_state) {
+}
+
+function ftlno_calculation_form_submit($form, &$form_state) {
+	$fdp = array();
+	foreach($form_state['values'] as $key => $value) {
+		$fdp[$key] = $value;
+	}
+	debug( $fdp);
+	// Basic FDP is 13 hours
+	$fdp['basic_max_fdp'] = 13 * 60;
+	// 30 minutes per sector if more than 2 sectors
+	$fdp['sectors_to_count'] = ($fdp['sectors'] < 3) ? 0 : $fdp['sectors']-2;
+	$fdp['sector_corr'] = $fdp['sectors_to_count'] * 30;
+	// WOCL
+	$fdp['wocl'] = wocl($fdp['base'], 
+	             $fdp['report_station'], 
+							 $fdp['report_time_lt'],
+							 $fdp['last_dep_from_base_lt'],
+							 $fdp['eta']);
+	debug($fdp['wocl']);
+		
+	// Extensions OM A 7.8
+	$extension = 0;
+	$augmentation = 0;
+	$bunk_correction = 0;
+
+	
+	//debug($form_state['values'], 'form_sate', true);
+	//calculation of MAX FDP
+	$max_fdp = $fdp['basic_max_fdp']
+	           - $fdp['sector_corr']
+	           - $fdp['wocl']['wocl_encroach']['wocl_corr'];
+	//TODO coorect for tz 
+	$latest_eta = new DateObject($fdp['report_time_lt']);
+	$latest_eta-> add(new DateInterval('PT' . $max_fdp . 'M'));
+	                
+	/*$fdp['max_fdp_h'] = floor($fdp['max_fdp'] / 60);
+	$fdp['$max_fdp_m'] = $fdp['max_fdp'] % 60;*/
+
+	
+	debug($fdp);
+	//drupal_set_message('Max duty period: ' . $max_fdp_h . ':' . $max_fdp_m . ' hrs ' . $max_fdp);
+	// result table
+	$header = array('', 'Latest ETA', 'Pre Rest', 'Post Rest');
+	$rows = array(
+	  '0' => array('Basic', $latest_eta-> format("Y-m-d H:i"), '789',''),
+		'1' => array('Comp. Extended', $latest_eta-> format("Y-m-d H:i"), 'zzz', ''),
+		'2' => array('Capt. Extended', $latest_eta-> format("Y-m-d H:i"),''),
+	);
+  $form_state['results_table'] = theme('table', array('header' => $header, 'rows' => $rows)); 
+  $form_state['rebuild'] = TRUE;
+	//return $form;
+
+}
+
+/*
+ * function to calculate WOCL effect
+ * @returns array containing WOCL data
+ */
+function wocl($base_st, $rep_st, $report_lt, $base_lt, $eta) {
+	$wocl = array();
+	$temp = array();
+	$stations = array($base_st, $rep_st);
+	foreach ($stations as $station) {
+		$wocl[$station]['tz'] = db_query("SELECT tz FROM {ftl_no} WHERE station = :station", array(':station' => $station))->fetchField();
+		$temp[] = $wocl[$station]['tz'];
+	}
+	//base tz = temp[0]
+	$wocl['tz_diff'] = abs($temp[0] - $temp[1]); // delta timezone between base and report stations
+	// Create UTC base time object
+	$base_utc_obj = get_utc($base_lt, $temp[0]);
+  // Create UTC reporting time object
+	$report_utc_obj = get_utc($report_lt, $temp[1]);
+	$wocl['base_utc'] = $base_utc_obj-> format('Y-m-d H:i');
+	$wocl['report_utc'] = $report_utc_obj-> format('Y-m-d H:i'); 
+	
+  $delta = $base_utc_obj-> difference($report_utc_obj, 'minutes', TRUE); 
+	  
+	$wocl['base_delta'] = $delta;
+	
+	// Which timezone to use for WOCL?
+	// If within 3 time zones WOCL refers to Base time
+	if (($wocl['tz_diff'] <= 3) or 
+		   (($wocl['tz_diff'] > 3) && ($delta <= 2880))) {
+	  // WOCL is base time
+		$report_lt_at_wocl_obj = get_lt($wocl['report_utc'], $temp[0]);
+		$eta_lt_at_wocl_obj = get_lt($eta, $temp[0]);
+		$wocl['wocl_station'] = $base_st;
+		$wocl['report_lt_at_wocl'] = $report_lt_at_wocl_obj-> format('Y-m-d H:i');
+		$wocl['eta_lt_at_wocl'] = $eta_lt_at_wocl_obj-> format('Y-m-d H:i');  
+	}
+	// outside 3 timezones but within 48 hours from base 
+	else {
+		$report_lt_at_wocl_obj = get_lt($wocl['report_utc'], $temp[1]);
+		$eta_lt_at_wocl_obj = get_lt($eta, $temp[1]);
+		$wocl['wocl_station'] = $rep_st;
+		$wocl['report_lt_at_wocl'] = $report_lt_at_wocl_obj-> format('Y-m-d H:i');
+		$wocl['eta_lt_at_wocl'] = $eta_lt_at_wocl_obj-> format('Y-m-d H:i');
+	}
+	// WOCL enchrouachment
+	$wocl['wocl_encroach'] = wocl_encroach($report_lt_at_wocl_obj, $eta_lt_at_wocl_obj); 
+	// Duty Ends in WOCL?
+	// How long in WOCL
+	return $wocl;
+}
+
+/*
+ * input $report = DateObject
+ */
+function wocl_encroach($report, $debrief) {
+	debug($report, "report", true);
+	debug($debrief, "debrief", true);
+	$wocl_encroach = array();
+	// Timestamps for $report and $debrief
+	$report_ts = strtotime($report-> format("Y-m-d H:i"));
+	$debrief_ts = strtotime($debrief-> format("Y-m-d H:i")); 
+	
+	// define the WOCL start en end times:
+	$wocl_ref = new DateObject($report-> format("Y-m-d H:i"));
+	$wocl_ref-> setTime(06,00); // end of wocl on report day
+  $wocl_ref_ts = strtotime($wocl_ref-> format("Y-m-d H:i"));
+	
+	$wocl_start = new DateObject($report-> format("Y-m-d H:i"));
+	$wocl_end = new DateObject($report-> format("Y-m-d H:i"));
+	$wocl_start-> setTime(02,00);
+	$wocl_end-> setTime(05,59);
+	// if reporting time is 06:00 or later that day 
+	// use next days wocl
+	if ($report_ts >= $wocl_ref_ts) { 
+	  $wocl_start-> add(new DateInterval('P1D'));
+		$wocl_end-> add(new DateInterval('P1D'));
+	}
+	
+	// Define the time stamps to do the calculations
+	$w_start = strtotime($wocl_start-> format("Y-m-d H:i"));
+  $w_end = strtotime($wocl_end-> format("Y-m-d H:i"));
+  	
+	// FDP fully enchroaches wocl
+	if (($report_ts <= $w_start) && ($debrief_ts >= $w_end)) {
+	  $wocl_encroach['encr_type'] = 'WOCL total encroached';
+		$wocl_encroach['wocl_corr'] = round($wocl_start-> difference($wocl_end, 'minutes', TRUE)/2);
+		//$wocl_encroach['encr_period'] = 120;
+		
+	}
+	// FDP ends in wocl
+	elseif (($report_ts < $w_start) && (($debrief_ts < $w_end) && ($debrief_ts > $w_start))){
+    $wocl_encroach['encr_type'] = 'ends in WOCL';
+		$wocl_encroach['wocl_corr'] = round($wocl_start-> difference($debrief, 'minutes', TRUE)/2);
+		if (($wocl_encroach['encr_period']) > 120) {
+			$wocl_encroach['wocl_corr'] = 120;
+		}
+	}
+	// FDP starts in wocl
+	elseif (($report_ts > $w_start) && ($report_ts < $w_end)) {
+    $wocl_encroach['encr_type'] = 'starts in WOCL';
+		$wocl_encroach['wocl_corr'] = $report-> difference($wocl_end, 'minutes', TRUE);
+		if (($wocl_encroach['wocl_corr']) > 120) {
+			$wocl_encroach['wocl_corr'] = 120;
+		}
+	}
+	else {
+		$wocl_encroach['encr_type'] = 'WOCL not applicable';
+		$wocl_encroach['wocl_corr'] = 0;
+	}
+	$wocl_encroach['report'] = $report-> format("Y-m-d H:i");
+	$wocl_encroach['debrief'] = $debrief-> format("Y-m-d H:i");
+  $wocl_encroach['wocl_start'] = $wocl_start-> format("Y-m-d H:i");
+	$wocl_encroach['wocl_end'] = $wocl_end-> format("Y-m-d H:i");
+  return $wocl_encroach;
+}
+
+/*
+ * return array with name of basestations
+ */
+function get_basestations() {
+  $query = "SELECT station FROM ftl_no ORDER by station";
+	$stations = db_query($query)->fetchAllKeyed(0,0);
+	debug($stations);
+	return $stations;
+}
+/*
+ * create a DateObject which is the UTC time for the
+ * Local time
+ */
+function get_utc($lt, $tz) {
+	// Create UTC base time
+	$utc = new DateObject($lt);
+	$interval = new DateInterval('PT' . abs($tz) . 'H');
+	if ($tz > 0) {
+		$interval-> invert = 1;
+	}
+	$utc-> add($interval);
+	return $utc;
+}
+
+function get_lt($utc, $tz) {
+	$lt_obj = new DateObject($utc);
+		$interval = new DateInterval('PT' . abs($tz) . 'H');
+	if ($tz < 0) {
+		$interval-> invert = 1;
+	}
+	$lt_obj-> add($interval);
+	return $lt_obj;
+}
+
+  
