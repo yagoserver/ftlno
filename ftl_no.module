@@ -1,4 +1,7 @@
 <?php
+define (
+ "DATEFORMAT", "d-m-Y H:i"
+);
 
 /**
  * Implements hook_mednu
@@ -94,29 +97,38 @@ function ftlno_calculation_form($form, &$form_state) {
     '#options' => $sectors,
     '#description' => t('Number of legs in this duty period'),
   );
- 	$form['crew'] = array(
+/* 	$form['augmentations'] = array(
     '#type' => 'fieldset', 
-	 	'#title' => t('Flight details'), 
+	 	'#title' => t('Augmentations'), 
     '#collapsible' => TRUE, 
     '#collapsed' => FALSE,
   );
-	 
-  $form['crew']['augmented'] = array(
+
+  $form['augmentations']['augm_comp'] = array(
+	  '#type' => 'checkbox', 
+    '#title' => t('Apply company extension'),
+		'#description' => t('OM A 7.8'),
+  );
+	
+  $form['augmentations']['augm_capt'] = array(
+	  '#type' => 'checkbox', 
+    '#title' => t("Apply Commander's extension"),
+		'#description' => t('OM A 7.11'),
+  );
+		
+  $form['augmentations']['augm_crew'] = array(
 	  '#type' => 'radios',
     '#title' => t('Crew augmented'),
     '#default_value' => 0,
     '#options' => array('0' => t('No'), '1' => t('Yes')),
     );
 	 
-	 $form['crew']['bunktime'] = array(
+	 $form['augmentations']['bunktime'] = array(
 	  '#type' => 'textfield',
     '#title' => t('Time spend in bunk'),
-    //'#default_value' => 1,
-   // '#options' => array('0' => t('No'), '1' => t('Yes')),
     '#description' => t('Enter the amount of time spent in bunk. Use format HH:MM. e.g. 01:30'),
 		'#disabled' => TRUE,
-    //'#access' => $admin,
-   );
+   );*/
   $form['submit'] = array(
     '#type' => 'submit',
     '#value' => t('Calculate'),
@@ -128,38 +140,68 @@ function ftlno_calculation_form_validate($form, &$form_state) {
 }
 
 function ftlno_calculation_form_submit($form, &$form_state) {
+	//$dateformat = DATEFORMAT
+	$dateformat = "d-m-Y H:i";
 	$fdp = array();
+	// Set defaults
+	$fdp['comp_corr'] = 0;
 	foreach($form_state['values'] as $key => $value) {
 		$fdp[$key] = $value;
 	}
-	debug( $fdp);
-	// Basic FDP is 13 hours
-	$fdp['basic_max_fdp'] = 13 * 60;
-	// 30 minutes per sector if more than 2 sectors
+	//debug($fdp);
+	// Basic FDP is 13 hours 
+	//mfdp_basic = basic max FDP
+	$fdp['mfdp_basic'] = 13 * 60;
+	// 30 minutes per sector if more than 2 sectors 
+	//mfdp_sector = max FDP after sector correction
 	$fdp['sectors_to_count'] = ($fdp['sectors'] < 3) ? 0 : $fdp['sectors']-2;
 	$fdp['sector_corr'] = $fdp['sectors_to_count'] * 30;
-	// WOCL
+	$fdp['mfdp_sector'] = $fdp['mfdp_basic'] - $fdp['sector_corr']; 
+	// Determin how to calc WOCL and set all WOCL vars
+	//mfdp_wocl = max FDP after applying WOCL
 	$fdp['wocl'] = wocl($fdp['base'], 
 	             $fdp['report_station'], 
 							 $fdp['report_time_lt'],
 							 $fdp['last_dep_from_base_lt'],
 							 $fdp['eta']);
-	debug($fdp['wocl']);
-		
+	$fdp['mfdp_wocl'] = $fdp['mfdp_sector'];
+	//debug($fdp['wocl']);	
 	// Extensions OM A 7.8
-	$extension = 0;
+	/* Company extension */
+	// mfdp_comp = MFDP after company extension
+	if ($fdp['augm_comp']) {
+	  $fdp['comp_corr'] = _company_correction($fdp['sectors'], $fdp['wocl']['wocl_encroach']); 
+	}
+	$fdp['mfdp_comp'] = $fdp['mfdp_wocl'] + $fdp['comp_corr'];
+	/* Commander and crew augmentation */
+  // TODO bunktime berekenen
+	$fdp['bunk_1_corr'] = 30;
+	$fdp['bunk_2_corr'] = 60;
+	$fdp['bunk_3_corr'] = 90;
+	$fdp['bunk_4_corr'] = 120;
+	$fdp['mfdp_augm'] = $fdp['mfdp_comp'] + $fdp['augm_corr'];
+  }
+	
+
 	$augmentation = 0;
 	$bunk_correction = 0;
-
 	
 	//debug($form_state['values'], 'form_sate', true);
-	//calculation of MAX FDP
-	$max_fdp = $fdp['basic_max_fdp']
+	// *** calculation of MAX FDP *** //
+	$max_fdp = $fdp['mfdp_basic']
 	           - $fdp['sector_corr']
 	           - $fdp['wocl']['wocl_encroach']['wocl_corr'];
-	//TODO coorect for tz 
-	$latest_eta = new DateObject($fdp['report_time_lt']);
-	$latest_eta-> add(new DateInterval('PT' . $max_fdp . 'M'));
+	// TODO Determine correct company and captextension
+	$comp_ext = 60;
+	$capt_ext = 120;
+	// TODO correct for tz 
+	$results['latest_eta'] = new DateObject($fdp['report_time_lt']);
+	$results['latest_eta_comp'] = new DateObject($fdp['report_time_lt']);
+	$results['latest_eta_capt'] = new DateObject($fdp['report_time_lt']);
+	
+	$results['latest_eta']-> add(new DateInterval('PT' . $max_fdp . 'M'));
+	$results['latest_eta_comp']-> add(new DateInterval('PT' . ($max_fdp + $comp_ext) . 'M'));
+	$results['latest_eta_capt']-> add(new DateInterval('PT' . ($max_fdp + $capt_ext) . 'M'));
 	                
 	/*$fdp['max_fdp_h'] = floor($fdp['max_fdp'] / 60);
 	$fdp['$max_fdp_m'] = $fdp['max_fdp'] % 60;*/
@@ -168,11 +210,11 @@ function ftlno_calculation_form_submit($form, &$form_state) {
 	debug($fdp);
 	//drupal_set_message('Max duty period: ' . $max_fdp_h . ':' . $max_fdp_m . ' hrs ' . $max_fdp);
 	// result table
-	$header = array('', 'Latest ETA', 'Pre Rest', 'Post Rest');
+	$header = array('', 'Max FDP', 'Latest ETA', 'Pre Rest', 'Post Rest');
 	$rows = array(
-	  '0' => array('Basic', $latest_eta-> format("Y-m-d H:i"), '789',''),
-		'1' => array('Comp. Extended', $latest_eta-> format("Y-m-d H:i"), 'zzz', ''),
-		'2' => array('Capt. Extended', $latest_eta-> format("Y-m-d H:i"),''),
+	  '0' => array('Without extension', min_to_str($max_fdp), $results['latest_eta']-> format(DATEFORMAT), '789',''),
+		'1' => array('Company extended', min_to_str($max_fdp + $comp_ext), $results['latest_eta_comp']-> format(DATEFORMAT), 'zzz', ''),
+		'2' => array('Captain extended', min_to_str($max_fdp + $capt_ext), $results['latest_eta_capt']-> format(DATEFORMAT),'',''),
 	);
   $form_state['results_table'] = theme('table', array('header' => $header, 'rows' => $rows)); 
   $form_state['rebuild'] = TRUE;
@@ -198,8 +240,8 @@ function wocl($base_st, $rep_st, $report_lt, $base_lt, $eta) {
 	$base_utc_obj = get_utc($base_lt, $temp[0]);
   // Create UTC reporting time object
 	$report_utc_obj = get_utc($report_lt, $temp[1]);
-	$wocl['base_utc'] = $base_utc_obj-> format('Y-m-d H:i');
-	$wocl['report_utc'] = $report_utc_obj-> format('Y-m-d H:i'); 
+	$wocl['base_utc'] = $base_utc_obj-> format(DATEFORMAT);
+	$wocl['report_utc'] = $report_utc_obj-> format(DATEFORMAT); 
 	
   $delta = $base_utc_obj-> difference($report_utc_obj, 'minutes', TRUE); 
 	  
@@ -213,16 +255,16 @@ function wocl($base_st, $rep_st, $report_lt, $base_lt, $eta) {
 		$report_lt_at_wocl_obj = get_lt($wocl['report_utc'], $temp[0]);
 		$eta_lt_at_wocl_obj = get_lt($eta, $temp[0]);
 		$wocl['wocl_station'] = $base_st;
-		$wocl['report_lt_at_wocl'] = $report_lt_at_wocl_obj-> format('Y-m-d H:i');
-		$wocl['eta_lt_at_wocl'] = $eta_lt_at_wocl_obj-> format('Y-m-d H:i');  
+		$wocl['report_lt_at_wocl'] = $report_lt_at_wocl_obj-> format(DATEFORMAT);
+		$wocl['eta_lt_at_wocl'] = $eta_lt_at_wocl_obj-> format(DATEFORMAT);  
 	}
 	// outside 3 timezones but within 48 hours from base 
 	else {
 		$report_lt_at_wocl_obj = get_lt($wocl['report_utc'], $temp[1]);
 		$eta_lt_at_wocl_obj = get_lt($eta, $temp[1]);
 		$wocl['wocl_station'] = $rep_st;
-		$wocl['report_lt_at_wocl'] = $report_lt_at_wocl_obj-> format('Y-m-d H:i');
-		$wocl['eta_lt_at_wocl'] = $eta_lt_at_wocl_obj-> format('Y-m-d H:i');
+		$wocl['report_lt_at_wocl'] = $report_lt_at_wocl_obj-> format(DATEFORMAT);
+		$wocl['eta_lt_at_wocl'] = $eta_lt_at_wocl_obj-> format(DATEFORMAT);
 	}
 	// WOCL enchrouachment
 	$wocl['wocl_encroach'] = wocl_encroach($report_lt_at_wocl_obj, $eta_lt_at_wocl_obj); 
@@ -239,16 +281,16 @@ function wocl_encroach($report, $debrief) {
 	debug($debrief, "debrief", true);
 	$wocl_encroach = array();
 	// Timestamps for $report and $debrief
-	$report_ts = strtotime($report-> format("Y-m-d H:i"));
-	$debrief_ts = strtotime($debrief-> format("Y-m-d H:i")); 
+	$report_ts = strtotime($report-> format(DATEFORMAT));
+	$debrief_ts = strtotime($debrief-> format(DATEFORMAT)); 
 	
 	// define the WOCL start en end times:
-	$wocl_ref = new DateObject($report-> format("Y-m-d H:i"));
+	$wocl_ref = new DateObject($report-> format(DATEFORMAT));
 	$wocl_ref-> setTime(06,00); // end of wocl on report day
-  $wocl_ref_ts = strtotime($wocl_ref-> format("Y-m-d H:i"));
+  $wocl_ref_ts = strtotime($wocl_ref-> format(DATEFORMAT));
 	
-	$wocl_start = new DateObject($report-> format("Y-m-d H:i"));
-	$wocl_end = new DateObject($report-> format("Y-m-d H:i"));
+	$wocl_start = new DateObject($report-> format(DATEFORMAT));
+	$wocl_end = new DateObject($report-> format(DATEFORMAT));
 	$wocl_start-> setTime(02,00);
 	$wocl_end-> setTime(05,59);
 	// if reporting time is 06:00 or later that day 
@@ -259,8 +301,8 @@ function wocl_encroach($report, $debrief) {
 	}
 	
 	// Define the time stamps to do the calculations
-	$w_start = strtotime($wocl_start-> format("Y-m-d H:i"));
-  $w_end = strtotime($wocl_end-> format("Y-m-d H:i"));
+	$w_start = strtotime($wocl_start-> format(DATEFORMAT));
+  $w_end = strtotime($wocl_end-> format(DATEFORMAT));
   	
 	// FDP fully enchroaches wocl
 	if (($report_ts <= $w_start) && ($debrief_ts >= $w_end)) {
@@ -289,11 +331,25 @@ function wocl_encroach($report, $debrief) {
 		$wocl_encroach['encr_type'] = 'WOCL not applicable';
 		$wocl_encroach['wocl_corr'] = 0;
 	}
-	$wocl_encroach['report'] = $report-> format("Y-m-d H:i");
-	$wocl_encroach['debrief'] = $debrief-> format("Y-m-d H:i");
-  $wocl_encroach['wocl_start'] = $wocl_start-> format("Y-m-d H:i");
-	$wocl_encroach['wocl_end'] = $wocl_end-> format("Y-m-d H:i");
+	$wocl_encroach['report'] = $report-> format(DATEFORMAT);
+	$wocl_encroach['debrief'] = $debrief-> format(DATEFORMAT);
+  $wocl_encroach['wocl_start'] = $wocl_start-> format(DATEFORMAT);
+	$wocl_encroach['wocl_end'] = $wocl_end-> format(DATEFORMAT);
   return $wocl_encroach;
+}
+
+function _company_correction($sectors, $wocl_encroach) {
+	if ($sectors > 5) { 
+    return 0;
+	}
+	
+	if (  (($wocl_encroach > 120) && ($sectors < 3)) ||  (($wocl_encroach <= 120) && ($sectors < 5)) ) { 
+    // TODO 22:00 - 04:59 rule
+		return 60;
+	}
+	else {
+	  return 0;
+	}
 }
 
 /*
@@ -330,4 +386,8 @@ function get_lt($utc, $tz) {
 	return $lt_obj;
 }
 
-  
+function min_to_str($minutes) {
+	$hrs = floor($minutes / 60);
+	$min = ($minutes % 60);
+	return sprintf("%02d", $hrs) . ':' . sprintf("%02d", $min);
+}
